@@ -155,32 +155,8 @@ export function isCdSegment(segment: string): boolean {
   return /^\s*cd\s+(?:'[^']*'|[^\s"'`$\\;&|<>()\[\]{}*?]+)\s*$/.test(segment);
 }
 
-/**
- * Test whether a segment is shell context setup that doesn't need its own
- * allow rule when it appears inside a chain.
- *
- * Covers: cd, set, export, source, true, false, :, and lone env var assignments.
- */
-export function isShellSetupSegment(segment: string): boolean {
-  const trimmed = segment.trim();
-  // cd <path>
-  if (isCdSegment(trimmed)) return true;
-  // set -o pipefail, set -e, set -x, etc.
-  if (/^\s*set\s+[-+]/.test(trimmed)) return true;
-  // export VAR=val, export -f
-  if (/^\s*export\s+/.test(trimmed)) return true;
-  // source / . (source a file)
-  if (/^\s*(source|\.)\s+/.test(trimmed)) return true;
-  // builtins that are no-ops or context
-  if (/^\s*(true|false|echo)\s*$/.test(trimmed)) return true;
-  // : (no-op, can take args which are ignored)
-  if (/^\s*:\s*/.test(trimmed)) return true;
-  // [ (test builtin) — pure conditional, no side effects
-  if (/^\s*\[\s+/.test(trimmed)) return true;
-  // Bare env var assignment(s) with no command: VAR=val VAR2=val2
-  if (/^\s*([A-Za-z_][A-Za-z0-9_]*=\S+\s*)+$/.test(trimmed)) return true;
-  return false;
-}
+// Shell setup detection lives in bash-normalizer.ts — re-export for consumers
+export { isShellSetupSegment } from "./bash-normalizer.js";
 
 /**
  * Check whether a bash segment contains an output redirect to a real file.

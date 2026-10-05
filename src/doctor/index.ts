@@ -53,5 +53,5 @@ export function runDoctor(permissions: Permissions, projectRoot?: string): Findi
 }
 
 // Re-export public API
-export { sortRules, applyFixes } from "./fixes.js";
+export { sortRules, ruleComparator, applyFixes } from "./fixes.js";
 export type { Finding, Severity } from "./types.js";

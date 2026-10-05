@@ -148,4 +148,85 @@ describe("savePermissions", () => {
     assert.strictEqual(loaded.systemPrompt, "test prompt content");
     unlinkSync(path);
   });
+
+  test("replace + sortFn preserves comments and sorts", () => {
+    const path = join(tmpdir(), `test-perms-sort-${Date.now()}.yml`);
+    writeFileSync(path, yml(
+      "allow:",
+      "  # Zebra comment",
+      '  - "Bash(zebra *)"',
+      "  # Alpha comment",
+      '  - "Bash(alpha *)"',
+      "deny:",
+      "  []",
+      "ask:",
+      "  []",
+    ));
+    const perms = {
+      allow: ["Bash(zebra *)", "Bash(alpha *)"],
+      deny: [],
+      ask: [],
+    };
+    const sortFn = (a: string, b: string) => a.localeCompare(b);
+    savePermissions(path, perms, { replace: true, sortFn });
+    const raw = readFileSync(path, "utf-8");
+    assert.ok(raw.includes("# Zebra comment"), "comment preserved");
+    assert.ok(raw.includes("# Alpha comment"), "comment preserved");
+    // Alpha should come before Zebra after sorting
+    const alphaIdx = raw.indexOf("alpha");
+    const zebraIdx = raw.indexOf("zebra");
+    assert.ok(alphaIdx < zebraIdx, "sorted correctly");
+    unlinkSync(path);
+  });
+
+  test("replace + sortFn syncs removals and additions", () => {
+    const path = join(tmpdir(), `test-perms-sync-${Date.now()}.yml`);
+    writeFileSync(path, yml(
+      "allow:",
+      "  # Keep this",
+      '  - "Bash(echo *)"',
+      "  # Remove this",
+      '  - "Bash(old-tool *)"',
+      "deny:",
+      "  []",
+      "ask:",
+      "  []",
+    ));
+    const perms = {
+      allow: ["Bash(echo *)", "Bash(new-tool *)"],
+      deny: [],
+      ask: [],
+    };
+    const sortFn = (a: string, b: string) => a.localeCompare(b);
+    savePermissions(path, perms, { replace: true, sortFn });
+    const raw = readFileSync(path, "utf-8");
+    assert.ok(raw.includes("Bash(echo *)"), "kept rule present");
+    assert.ok(raw.includes("# Keep this"), "kept comment present");
+    assert.ok(!raw.includes("old-tool"), "removed rule gone");
+    assert.ok(!raw.includes("Remove this"), "removed comment gone");
+    assert.ok(raw.includes("Bash(new-tool *)"), "new rule added");
+    unlinkSync(path);
+  });
+
+  test("replace without sortFn does plain serialize (no comments)", () => {
+    const path = join(tmpdir(), `test-perms-nosort-${Date.now()}.yml`);
+    writeFileSync(path, yml(
+      "allow:",
+      "  # A comment",
+      '  - "Bash(echo *)"',
+      "deny:",
+      "  []",
+      "ask:",
+      "  []",
+    ));
+    const perms = {
+      allow: ["Bash(echo *)"],
+      deny: [],
+      ask: [],
+    };
+    savePermissions(path, perms, { replace: true });
+    const raw = readFileSync(path, "utf-8");
+    assert.ok(!raw.includes("# A comment"), "comment not preserved without sortFn");
+    unlinkSync(path);
+  });
 });

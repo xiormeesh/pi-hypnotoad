@@ -152,6 +152,202 @@ function ruleGroupKey(rule: string): string {
 }
 
 /**
+ * Sort rules within each section of a YAML file, preserving comments.
+ *
+ * Comments and blank lines above a rule are "sticky" — they move with
+ * the rule when it's sorted.
+ *
+ * @param rawText   The full YAML file text.
+ * @param sortFn    Comparator for rule strings (receives the parsed rule
+ *                  value, not the YAML line).
+ * @returns         The sorted YAML text.
+ */
+export function sortYamlPreservingComments(
+  rawText: string,
+  sortFn: (a: string, b: string) => number,
+): string {
+  const lines = rawText.split("\n");
+  const result: string[] = [];
+  const LISTS = ["allow", "deny", "ask"] as const;
+
+  let i = 0;
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+
+    // Check if this line is a section header
+    const sectionMatch = LISTS.find(
+      (l) => trimmed === `${l}:` || trimmed.startsWith(`${l}:`),
+    );
+
+    if (!sectionMatch) {
+      result.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    // Found a section — emit the header
+    result.push(lines[i]);
+    i++;
+
+    // Find the section boundary (next top-level key or EOF)
+    let sectionEnd = lines.length;
+    for (let j = i; j < lines.length; j++) {
+      const t = lines[j].trim();
+      if (
+        !lines[j].startsWith(" ") &&
+        !lines[j].startsWith("#") &&
+        t.includes(":") &&
+        t !== ""
+      ) {
+        sectionEnd = j;
+        break;
+      }
+    }
+
+    // Parse section lines into entries: { preamble: string[], rule: string, ruleLine: string }
+    // preamble = comment/blank lines above the rule ("sticky" to it)
+    type Entry = { preamble: string[]; rule: string; ruleLine: string };
+    const entries: Entry[] = [];
+    let preamble: string[] = [];
+
+    for (let j = i; j < sectionEnd; j++) {
+      const t = lines[j].trim();
+      if (t.startsWith("- ")) {
+        // This is a rule line — extract the value
+        let value = t.slice(2).trim();
+        if (value.startsWith('"') || value.startsWith("'")) {
+          const quote = value[0];
+          const endQuote = value.lastIndexOf(quote);
+          if (endQuote > 0) value = value.slice(1, endQuote);
+        } else {
+          const hashIdx = value.indexOf(" #");
+          if (hashIdx >= 0) value = value.slice(0, hashIdx).trim();
+        }
+
+        entries.push({ preamble, rule: value, ruleLine: lines[j] });
+        preamble = [];
+      } else {
+        // Comment or blank line
+        preamble.push(lines[j]);
+      }
+    }
+
+    // Sort the entries
+    entries.sort((a, b) => sortFn(a.rule, b.rule));
+
+    // Emit sorted entries with their sticky comments
+    for (const entry of entries) {
+      for (const line of entry.preamble) result.push(line);
+      result.push(entry.ruleLine);
+    }
+
+    // Emit any trailing comments/blanks after the last rule
+    for (const line of preamble) result.push(line);
+
+    i = sectionEnd;
+  }
+
+  return result.join("\n");
+}
+
+/**
+ * Sync a YAML file's sections with in-memory permissions.
+ *
+ * - Removes rule lines (and their sticky comments) that are not in the
+ *   in-memory lists.
+ * - Appends new rules that exist in memory but not on disk.
+ *
+ * Preserves all other text (comments, blank lines, systemPrompt, etc.).
+ */
+export function syncYamlWithPermissions(
+  rawText: string,
+  permissions: Permissions,
+): string {
+  const lines = rawText.split("\n");
+  const result: string[] = [];
+  const SECTION_LISTS = ["allow", "deny", "ask"] as const;
+
+  let i = 0;
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+
+    const sectionMatch = SECTION_LISTS.find(
+      (l) => trimmed === `${l}:` || trimmed.startsWith(`${l}:`),
+    );
+
+    if (!sectionMatch) {
+      result.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    // Found a section — emit the header
+    result.push(lines[i]);
+    i++;
+
+    // Find section end
+    let sectionEnd = lines.length;
+    for (let j = i; j < sectionEnd; j++) {
+      const t = lines[j].trim();
+      if (
+        !lines[j].startsWith(" ") &&
+        !lines[j].startsWith("#") &&
+        t.includes(":") &&
+        t !== ""
+      ) {
+        sectionEnd = j;
+        break;
+      }
+    }
+
+    const wantedRules = new Set(permissions[sectionMatch]);
+    const seenRules = new Set<string>();
+    let preamble: string[] = [];
+
+    // Walk section, keep rules that are in the wanted set
+    for (let j = i; j < sectionEnd; j++) {
+      const t = lines[j].trim();
+      if (t.startsWith("- ")) {
+        let value = t.slice(2).trim();
+        if (value.startsWith('"') || value.startsWith("'")) {
+          const quote = value[0];
+          const endQuote = value.lastIndexOf(quote);
+          if (endQuote > 0) value = value.slice(1, endQuote);
+        } else {
+          const hashIdx = value.indexOf(" #");
+          if (hashIdx >= 0) value = value.slice(0, hashIdx).trim();
+        }
+
+        if (wantedRules.has(value)) {
+          // Keep: emit preamble + rule
+          for (const line of preamble) result.push(line);
+          result.push(lines[j]);
+          seenRules.add(value);
+        }
+        // Either way, reset preamble
+        preamble = [];
+      } else {
+        preamble.push(lines[j]);
+      }
+    }
+
+    // Append rules that are new (not on disk)
+    for (const rule of permissions[sectionMatch]) {
+      if (!seenRules.has(rule)) {
+        result.push(`  - "${rule}"`);
+      }
+    }
+
+    // Emit any trailing comments/blanks
+    for (const line of preamble) result.push(line);
+
+    i = sectionEnd;
+  }
+
+  return result.join("\n");
+}
+
+/**
  * Merge a new rule into a YAML file's raw text, preserving comments.
  *
  * Tries to insert near existing rules that share the same command prefix

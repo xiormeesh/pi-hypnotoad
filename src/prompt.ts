@@ -5,8 +5,9 @@
  * a simple path display for file operations.
  */
 
-import { splitBashSegments, fileRedirectTarget } from "./parser.js";
+import { splitBashSegments, fileRedirectTarget, isShellSetupSegment } from "./parser.js";
 import { matchesAnyRule } from "./matcher.js";
+import { normalizeCommand } from "./normalizer.js";
 import type { Permissions } from "./types.js";
 
 const MAX_SEGMENT_DISPLAY = 200;
@@ -19,9 +20,22 @@ interface AnnotatedSegment {
   status: SegmentStatus;
 }
 
+// ANSI color helpers
+const YELLOW = "\x1b[33m";
+const GREEN = "\x1b[32m";
+const RED = "\x1b[31m";
+const RESET = "\x1b[0m";
+
+const statusColors: Record<SegmentStatus, string> = {
+  allow: GREEN,
+  deny: RED,
+  ask: YELLOW,
+  unknown: YELLOW,
+};
+
 const statusIcons: Record<SegmentStatus, string> = {
-  allow: "✓",
-  deny: "✗",
+  allow: "\u2713",
+  deny: "\u2717",
   ask: "?",
   unknown: "?",
 };
@@ -36,23 +50,28 @@ const statusLabels: Record<SegmentStatus, string> = {
 const REDIRECT_LABEL = "(writes to file)";
 
 /** Classify each segment of a bash command against the permission rules. */
-export function classifySegments(command: string, permissions: Permissions): AnnotatedSegment[] {
+export function classifySegments(command: string, permissions: Permissions, projectRoot?: string): AnnotatedSegment[] {
   const segments = splitBashSegments(command);
   return segments.map((text) => {
     let status: SegmentStatus = "unknown";
-    if (matchesAnyRule(permissions.deny, "Bash", text)) {
+    if (matchesAnyRule(permissions.deny, "Bash", text, projectRoot)) {
       status = "deny";
     } else if (
-      matchesAnyRule(permissions.ask, "Bash", text) &&
-      !matchesAnyRule(permissions.allow, "Bash", text)
+      matchesAnyRule(permissions.ask, "Bash", text, projectRoot) &&
+      !matchesAnyRule(permissions.allow, "Bash", text, projectRoot)
     ) {
       status = "ask";
-    } else if (matchesAnyRule(permissions.allow, "Bash", text)) {
+    } else if (matchesAnyRule(permissions.allow, "Bash", text, projectRoot)) {
       // Allowed by pattern, but check for file redirects — a command that
       // writes to a file shouldn't be silently approved just because the
       // base command is allowed (e.g., echo * shouldn't auto-allow echo > file)
       const redirectTarget = fileRedirectTarget(text);
       status = redirectTarget ? "unknown" : "allow";
+    } else if (
+      segments.length > 1 &&
+      (isShellSetupSegment(text) || isShellSetupSegment(normalizeCommand(text, projectRoot)))
+    ) {
+      status = "allow";
     }
     return { text, status };
   });
@@ -89,19 +108,43 @@ function formatSegment(text: string, maxLen: number): string {
  * split on \n yet) — every visual line gets an icon so nothing looks orphaned.
  * The suffix (label) is appended only to the last sub-line.
  *
- * No ANSI styling — pi's TUI select measures raw string length, so escape
- * codes cause misalignment between lines with different-length sequences.
+ * ANSI styling is applied via statusIcons for visual distinction.
+ * pi's TUI uses visibleWidth() to measure, so escape codes are safe.
  */
 function prefixedLines(
   display: string,
   icon: string,
   suffix: string,
+  color: string = "",
+  indent: number = 0,
 ): string[] {
+  const pad = "  ".repeat(indent);
   const subLines = display.split("\n").map((l) => l.trim()).filter(Boolean);
   return subLines.map((line, i) => {
     const s = i === subLines.length - 1 ? suffix : "";
-    return `  ${icon} ${line}${s}`;
+    if (color) {
+      return `  ${color}${icon} ${pad}${line}${s}${RESET}`;
+    }
+    return `  ${icon} ${pad}${line}${s}`;
   });
+}
+
+// Keywords that increase nesting AFTER the line
+const INDENT_AFTER = /^\s*(for\b|while\b|until\b|if\b|case\b|do\b|then\b|else\b|elif\b)/;
+// Keywords that decrease nesting BEFORE the line
+const DEDENT_BEFORE = /^\s*(done|fi|esac|else|elif|do|then)\s*$/;
+
+/** Compute indentation level for each segment in a multi-line script. */
+function computeIndents(segments: { text: string }[]): number[] {
+  const indents: number[] = [];
+  let level = 0;
+  for (const seg of segments) {
+    const trimmed = seg.text.trim();
+    if (DEDENT_BEFORE.test(trimmed)) level = Math.max(0, level - 1);
+    indents.push(level);
+    if (INDENT_AFTER.test(trimmed)) level++;
+  }
+  return indents;
 }
 
 /**
@@ -111,28 +154,31 @@ function prefixedLines(
 export function formatBashPrompt(
   command: string,
   permissions: Permissions,
-  reason?: string,
+  projectRoot?: string,
 ): string {
-  const annotated = classifySegments(command, permissions);
+  const annotated = classifySegments(command, permissions, projectRoot);
 
   // Single segment — simple display
   if (annotated.length === 1) {
     const seg = annotated[0];
     const icon = statusIcons[seg.status];
     const label = statusLabels[seg.status];
+    const color = statusColors[seg.status];
     const redirect = seg.status !== "allow" ? fileRedirectTarget(seg.text) : null;
     const display = formatSegment(seg.text, MAX_TOTAL_DISPLAY);
     const suffix = redirect
       ? `  ${REDIRECT_LABEL}`
       : label ? `  ${label}` : "";
-    return prefixedLines(display, icon, suffix).join("\n");
+    return prefixedLines(display, icon, suffix, color).join("\n");
   }
 
-  // Multiple segments — one per line with status
+  // Multiple segments — one per line with status and indentation
   const lines: string[] = [];
   let totalLen = 0;
+  const indents = computeIndents(annotated);
 
-  for (const seg of annotated) {
+  for (let idx = 0; idx < annotated.length; idx++) {
+    const seg = annotated[idx];
     const icon = statusIcons[seg.status];
     const label = statusLabels[seg.status];
     const budget = Math.min(MAX_SEGMENT_DISPLAY, MAX_TOTAL_DISPLAY - totalLen);
@@ -147,7 +193,8 @@ export function formatBashPrompt(
     const suffix = redirect
       ? `  ${REDIRECT_LABEL}`
       : label ? `  ${label}` : "";
-    lines.push(...prefixedLines(display, icon, suffix));
+    const color = statusColors[seg.status];
+    lines.push(...prefixedLines(display, icon, suffix, color, indents[idx]));
     totalLen += display.length;
   }
 
@@ -158,8 +205,8 @@ export function formatBashPrompt(
  * Determine the overall reason label for a bash prompt based on
  * which segments triggered it.
  */
-export function bashPromptLabel(command: string, permissions: Permissions): string {
-  const annotated = classifySegments(command, permissions);
+export function bashPromptLabel(command: string, permissions: Permissions, projectRoot?: string): string {
+  const annotated = classifySegments(command, permissions, projectRoot);
   const hasAsk = annotated.some((s) => s.status === "ask");
   const hasDeny = annotated.some((s) => s.status === "deny");
   const hasUnknown = annotated.some((s) => s.status === "unknown");

@@ -66,7 +66,7 @@ function expandTilde(s: string): string {
 }
 
 /** Test whether a single rule matches a tool type and value. */
-export function matchesRule(rule: string, toolType: string, value: string): boolean {
+export function matchesRule(rule: string, toolType: string, value: string, projectRoot?: string): boolean {
   const parsed = parseRule(rule);
   if (!parsed) return false;
   // Modify matches both Write and Edit
@@ -76,7 +76,7 @@ export function matchesRule(rule: string, toolType: string, value: string): bool
 
   let matchValue = toolType !== "Bash" ? stripDotSlash(value) : value;
   if (toolType === "Bash") {
-    matchValue = normalizeCommand(matchValue);
+    matchValue = normalizeCommand(matchValue, projectRoot);
   }
 
   // Expand braces and tilde, match against any expanded variant
@@ -86,25 +86,26 @@ export function matchesRule(rule: string, toolType: string, value: string): bool
 }
 
 /** Test whether any rule in the list matches. */
-export function matchesAnyRule(rules: string[], toolType: string, value: string): boolean {
-  return rules.some((rule) => matchesRule(rule, toolType, value));
+export function matchesAnyRule(rules: string[], toolType: string, value: string, projectRoot?: string): boolean {
+  return rules.some((rule) => matchesRule(rule, toolType, value, projectRoot));
 }
 
 /**
  * For bash commands with chains, check that ALL segments match the rules.
  * Standalone `cd <literal>` segments in a chain are exempt (shell context setup).
  */
-export function matchesBashRules(rules: string[], command: string): boolean {
+export function matchesBashRules(rules: string[], command: string, projectRoot?: string): boolean {
   const segments = splitBashSegments(command);
   return segments.every((seg) =>
-    matchesAnyRule(rules, "Bash", seg) || (segments.length > 1 && isShellSetupSegment(seg)),
+    matchesAnyRule(rules, "Bash", seg, projectRoot) ||
+    (segments.length > 1 && (isShellSetupSegment(seg) || isShellSetupSegment(normalizeCommand(seg, projectRoot)))),
   );
 }
 
 /** Check whether ANY segment in a bash chain matches the rules (used for deny/ask checks). */
-export function anySegmentMatchesBashRules(rules: string[], command: string): boolean {
+export function anySegmentMatchesBashRules(rules: string[], command: string, projectRoot?: string): boolean {
   const segments = splitBashSegments(command);
-  return segments.some((seg) => matchesAnyRule(rules, "Bash", seg));
+  return segments.some((seg) => matchesAnyRule(rules, "Bash", seg, projectRoot));
 }
 
 /**
@@ -116,9 +117,10 @@ export function anySegmentMatchesBashRulesExcludingAllowed(
   askRules: string[],
   allowRules: string[],
   command: string,
+  projectRoot?: string,
 ): boolean {
   const segments = splitBashSegments(command);
   return segments.some(
-    (seg) => matchesAnyRule(askRules, "Bash", seg) && !matchesAnyRule(allowRules, "Bash", seg),
+    (seg) => matchesAnyRule(askRules, "Bash", seg, projectRoot) && !matchesAnyRule(allowRules, "Bash", seg, projectRoot),
   );
 }

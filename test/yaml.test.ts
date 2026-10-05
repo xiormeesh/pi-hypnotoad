@@ -1,6 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { parseYaml, serializeYaml, mergeRuleIntoYaml } from "../src/yaml.js";
+import { parseYaml, serializeYaml, mergeRuleIntoYaml, sortYamlPreservingComments, syncYamlWithPermissions } from "../src/yaml.js";
+import { ruleComparator } from "../src/doctor/fixes.js";
 
 describe("parseYaml", () => {
   test("parses simple lists", () => {
@@ -261,5 +262,212 @@ ask:
   test("returns null for missing section", () => {
     const result = mergeRuleIntoYaml("allow:\n  - 'x'\n", "deny", "y");
     assert.strictEqual(result, null);
+  });
+});
+
+describe("sortYamlPreservingComments", () => {
+  test("sorts rules alphabetically, keeping sticky comments", () => {
+    const yaml = `allow:
+  # Zebra comment
+  - "Bash(zebra *)"
+  # Alpha comment
+  - "Bash(alpha *)"
+deny:
+  []
+ask:
+  []
+`;
+    const sorted = sortYamlPreservingComments(yaml, (a, b) => a.localeCompare(b));
+    const lines = sorted.split("\n");
+    const alphaComment = lines.findIndex((l) => l.includes("Alpha comment"));
+    const alphaRule = lines.findIndex((l) => l.includes("alpha"));
+    const zebraComment = lines.findIndex((l) => l.includes("Zebra comment"));
+    const zebraRule = lines.findIndex((l) => l.includes("zebra"));
+    // Alpha should come before Zebra after sorting
+    assert.ok(alphaRule < zebraRule, "alpha rule before zebra");
+    // Each comment should stay directly above its rule
+    assert.strictEqual(alphaComment, alphaRule - 1, "alpha comment sticky");
+    assert.strictEqual(zebraComment, zebraRule - 1, "zebra comment sticky");
+  });
+
+  test("blank line + comment above first rule stays sticky to it", () => {
+    const yaml = `allow:
+  # Section header
+
+  # Beta
+  - "Bash(beta *)"
+  # Alpha
+  - "Bash(alpha *)"
+deny:
+  []
+ask:
+  []
+`;
+    const sorted = sortYamlPreservingComments(yaml, (a, b) => a.localeCompare(b));
+    const lines = sorted.split("\n");
+    // Alpha (with its comment) should come first, then beta (with its section header + blank + comment)
+    const alphaComment = lines.findIndex((l) => l.includes("Alpha"));
+    const alphaRule = lines.findIndex((l) => l.includes("alpha"));
+    const betaRule = lines.findIndex((l) => l.includes("beta"));
+    assert.strictEqual(alphaComment, alphaRule - 1, "alpha comment sticky");
+    assert.ok(alphaRule < betaRule, "alpha before beta");
+  });
+
+  test("preserves file-level comments before sections", () => {
+    const yaml = `# File comment\n\nallow:\n  - "Bash(echo *)"\ndeny:\n  []\nask:\n  []\n`;
+    const sorted = sortYamlPreservingComments(yaml, (a, b) => a.localeCompare(b));
+    assert.ok(sorted.startsWith("# File comment"));
+  });
+
+  test("preserves systemPrompt block untouched", () => {
+    const yaml = `allow:
+  - "Bash(echo *)"
+deny:
+  []
+ask:
+  []
+systemPrompt: |
+  ## Restrictions
+  Do not run rm.
+`;
+    const sorted = sortYamlPreservingComments(yaml, (a, b) => a.localeCompare(b));
+    assert.ok(sorted.includes("systemPrompt: |"));
+    assert.ok(sorted.includes("## Restrictions"));
+    assert.ok(sorted.includes("Do not run rm."));
+  });
+
+  test("sorts across multiple sections independently", () => {
+    const yaml = `allow:
+  - "Bash(grep *)"
+  - "Bash(echo *)"
+deny:
+  - "Bash(sudo *)"
+  - "Bash(rm -rf *)"
+ask:
+  - "Bash(make *)"
+  - "Bash(curl *)"
+`;
+    const sorted = sortYamlPreservingComments(yaml, (a, b) => a.localeCompare(b));
+    const lines = sorted.split("\n");
+    // allow: echo before grep
+    const echoIdx = lines.findIndex((l) => l.includes("echo"));
+    const grepIdx = lines.findIndex((l) => l.includes("grep"));
+    assert.ok(echoIdx < grepIdx);
+    // deny: rm before sudo
+    const rmIdx = lines.findIndex((l) => l.includes("rm -rf"));
+    const sudoIdx = lines.findIndex((l) => l.includes("sudo"));
+    assert.ok(rmIdx < sudoIdx);
+    // ask: curl before make
+    const curlIdx = lines.findIndex((l) => l.includes("curl"));
+    const makeIdx = lines.findIndex((l) => l.includes("make"));
+    assert.ok(curlIdx < makeIdx);
+  });
+
+  test("works with ruleComparator (type grouping)", () => {
+    const yaml = `allow:
+  # Shell
+  - "Bash(echo *)"
+  # Files
+  - "Read(path:**)"
+  # Modify
+  - "Modify(path:src/**)"
+deny:
+  []
+ask:
+  []
+`;
+    const sorted = sortYamlPreservingComments(yaml, ruleComparator);
+    const lines = sorted.split("\n");
+    const readIdx = lines.findIndex((l) => l.includes("Read(path:**)"));
+    const modifyIdx = lines.findIndex((l) => l.includes("Modify"));
+    const bashIdx = lines.findIndex((l) => l.includes("Bash(echo"));
+    // ruleComparator groups: Read(0) < Modify(via Write/Edit?) < Bash(3)
+    assert.ok(readIdx < bashIdx, "Read before Bash");
+  });
+
+  test("multi-line comment block stays with rule", () => {
+    const yaml = `allow:
+  # First line of comment
+  # Second line of comment
+  - "Bash(zebra *)"
+  # Single comment
+  - "Bash(alpha *)"
+deny:
+  []
+ask:
+  []
+`;
+    const sorted = sortYamlPreservingComments(yaml, (a, b) => a.localeCompare(b));
+    const lines = sorted.split("\n");
+    const alphaIdx = lines.findIndex((l) => l.includes('"Bash(alpha'));
+    const firstLineIdx = lines.findIndex((l) => l.includes("First line"));
+    const secondLineIdx = lines.findIndex((l) => l.includes("Second line"));
+    const zebraIdx = lines.findIndex((l) => l.includes('"Bash(zebra'));
+    // Multi-line comment stays with zebra
+    assert.strictEqual(firstLineIdx, zebraIdx - 2);
+    assert.strictEqual(secondLineIdx, zebraIdx - 1);
+    // Alpha comes first
+    assert.ok(alphaIdx < zebraIdx);
+  });
+});
+
+describe("syncYamlWithPermissions", () => {
+  test("removes rules not in permissions, keeps comments for remaining", () => {
+    const yaml = `allow:
+  # Keep this
+  - "Bash(echo *)"
+  # Remove this
+  - "Bash(rm *)"
+deny:
+  []
+ask:
+  []
+`;
+    const result = syncYamlWithPermissions(yaml, {
+      allow: ["Bash(echo *)"],
+      deny: [],
+      ask: [],
+    });
+    assert.ok(result.includes("Bash(echo *)"));
+    assert.ok(result.includes("Keep this"));
+    assert.ok(!result.includes("Bash(rm *)"));
+    assert.ok(!result.includes("Remove this"));
+  });
+
+  test("adds new rules that are in permissions but not on disk", () => {
+    const yaml = `allow:
+  - "Bash(echo *)"
+deny:
+  []
+ask:
+  []
+`;
+    const result = syncYamlWithPermissions(yaml, {
+      allow: ["Bash(echo *)", "Bash(grep *)"],
+      deny: [],
+      ask: [],
+    });
+    assert.ok(result.includes("Bash(echo *)"));
+    assert.ok(result.includes("Bash(grep *)"));
+  });
+
+  test("preserves systemPrompt", () => {
+    const yaml = `allow:
+  - "Bash(echo *)"
+deny:
+  []
+ask:
+  []
+systemPrompt: |
+  ## Restrictions
+  No rm.
+`;
+    const result = syncYamlWithPermissions(yaml, {
+      allow: ["Bash(echo *)"],
+      deny: [],
+      ask: [],
+    });
+    assert.ok(result.includes("systemPrompt: |"));
+    assert.ok(result.includes("## Restrictions"));
   });
 });

@@ -27,7 +27,7 @@ import { suggestBashPattern, suggestFilePattern } from "./src/suggest.js";
 import { formatBashPrompt } from "./src/prompt.js";
 import { resolvePermissionsPath, loadPermissions, savePermissions } from "./src/permissions.js";
 import { isDevModeBashAllowed, isFileUnderDevPath } from "./src/devmode.js";
-import { runDoctor, applyFixes, sortRules } from "./src/doctor/index.js";
+import { runDoctor, applyFixes, sortRules, ruleComparator } from "./src/doctor/index.js";
 import type { Finding } from "./src/doctor/index.js";
 
 // --- Display helpers ---
@@ -72,7 +72,7 @@ async function promptUser(
   if (!ctx.hasUI) return "deny_once";
   const display = detail.length > 300 ? detail.slice(0, 297) + "..." : detail;
   const choice = await ctx.ui.select(
-    `${icon} ${label}:\n\n  ${display}\n`,
+    `${icon} ${label}:\n\n${display}\n`,
     ["Always allow", "Allow once", "Deny once", "Always deny"],
   );
   switch (choice) {
@@ -248,7 +248,7 @@ export default function (pi: ExtensionAPI) {
         permissions.allow = sortRules(permissions.allow);
         permissions.deny = sortRules(permissions.deny);
         permissions.ask = sortRules(permissions.ask);
-        savePermissions(permissionsPath, permissions, { replace: true });
+        savePermissions(permissionsPath, permissions, { replace: true, sortFn: ruleComparator });
         ctx.ui.notify("Rules sorted and saved", "info");
         return;
       }
@@ -316,7 +316,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         const changeCount = applyFixes(permissions, findings, approved);
-        savePermissions(permissionsPath, permissions, { replace: true });
+        savePermissions(permissionsPath, permissions, { replace: true, sortFn: ruleComparator });
         ctx.ui.notify(
           `✅ Applied ${changeCount} change(s) and saved to ${permissionsPath}`,
           "info",
@@ -371,15 +371,15 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Deny — any segment matching deny blocks the whole command
-      if (anySegmentMatchesBashRules(permissions.deny, command)) {
+      if (anySegmentMatchesBashRules(permissions.deny, command, projectRoot)) {
         return { block: true, reason: "Blocked: dangerous command pattern" };
       }
 
       // Ask — any segment matching ask forces a prompt, UNLESS that segment
       // also matches an allow rule (specific allow overrides broad ask)
-      if (anySegmentMatchesBashRulesExcludingAllowed(permissions.ask, permissions.allow, command)) {
+      if (anySegmentMatchesBashRulesExcludingAllowed(permissions.ask, permissions.allow, command, projectRoot)) {
         if (!ctx.hasUI) return { block: true, reason: "Blocked: no UI for approval" };
-        const display = formatBashPrompt(command, permissions);
+        const display = formatBashPrompt(command, permissions, projectRoot);
         const choice = await ctx.ui.select(
           `🔔 Bash command needs approval:\n\n${display}\n`,
           ["Allow", "Block"],
@@ -389,7 +389,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Allow — all segments must match AND no segment writes to a file
-      if (matchesBashRules(permissions.allow, command) && !anySegmentHasFileRedirect(command)) {
+      if (matchesBashRules(permissions.allow, command, projectRoot) && !anySegmentHasFileRedirect(command)) {
         return undefined;
       }
 
@@ -397,7 +397,7 @@ export default function (pi: ExtensionAPI) {
       if (devMode.active && isDevModeBashAllowed(command, permissions.allow)) return undefined;
 
       // No match — 4-choice prompt with pattern suggestion
-      const display = formatBashPrompt(command, permissions);
+      const display = formatBashPrompt(command, permissions, projectRoot);
       const allowed = await promptAndPersist(
         ctx, "🐚", "Bash command needs approval", display,
         "Bash", suggestBashPattern(command),

@@ -284,6 +284,15 @@ describe("isShellSetupSegment", () => {
   test("env var + command is NOT setup", () => {
     assert.ok(!isShellSetupSegment("FOO=bar make test"));
   });
+
+  // --- shell control-flow ---
+  test("fi is setup", () => assert.ok(isShellSetupSegment("fi")));
+  test("done is setup", () => assert.ok(isShellSetupSegment("done")));
+  test("esac is setup", () => assert.ok(isShellSetupSegment("esac")));
+  test("for VAR in ... is setup", () => assert.ok(isShellSetupSegment("for f in *.md")));
+  test("case WORD in is setup", () => assert.ok(isShellSetupSegment('case "$1" in')));
+  test("[[ ... ]] is setup", () => assert.ok(isShellSetupSegment('[[ -f "$f" ]]')));
+  test("[ ... ] is setup", () => assert.ok(isShellSetupSegment('[ -d "$dir" ]')));
 });
 
 describe("fileRedirectTarget", () => {

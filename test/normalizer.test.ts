@@ -118,4 +118,161 @@ describe("normalizeCommand", () => {
       "make test 2>&1",
     );
   });
+
+  // --- Pipeline negation ---
+
+  test("strips leading ! (pipeline negation)", () => {
+    assert.strictEqual(
+      normalizeCommand("! grep -q pattern file.txt"),
+      "grep -q pattern file.txt",
+    );
+  });
+
+  test("leaves commands without ! unchanged", () => {
+    assert.strictEqual(
+      normalizeCommand("grep -q pattern file.txt"),
+      "grep -q pattern file.txt",
+    );
+  });
+
+  // --- xargs stripping ---
+
+  test("strips bare xargs", () => {
+    assert.strictEqual(
+      normalizeCommand("xargs grep -l foo"),
+      "grep -l foo",
+    );
+  });
+
+  test("strips xargs -0", () => {
+    assert.strictEqual(
+      normalizeCommand("xargs -0 grep -H -E '^pattern'"),
+      "grep -H -E '^pattern'",
+    );
+  });
+
+  test("strips xargs with -I{}", () => {
+    assert.strictEqual(
+      normalizeCommand("xargs -I{} stat {}"),
+      "stat {}",
+    );
+  });
+
+  test("strips xargs with -I {}", () => {
+    assert.strictEqual(
+      normalizeCommand("xargs -I {} stat {}"),
+      "stat {}",
+    );
+  });
+
+  test("strips xargs with -n and -P flags", () => {
+    assert.strictEqual(
+      normalizeCommand("xargs -0 -n 1 -P 4 wc -l"),
+      "wc -l",
+    );
+  });
+
+  test("strips xargs --null --no-run-if-empty", () => {
+    assert.strictEqual(
+      normalizeCommand("xargs --null --no-run-if-empty cat"),
+      "cat",
+    );
+  });
+
+  test("leaves bare xargs with no command unchanged", () => {
+    assert.strictEqual(
+      normalizeCommand("xargs"),
+      "xargs",
+    );
+  });
+
+  // --- Absolute project-root path normalization ---
+
+  test("strips project root from absolute paths", () => {
+    assert.strictEqual(
+      normalizeCommand("bash /home/user/project/.pi/skills/foo.sh", "/home/user/project"),
+      "bash .pi/skills/foo.sh",
+    );
+  });
+
+  test("strips project root from multiple path arguments", () => {
+    assert.strictEqual(
+      normalizeCommand("diff /home/user/project/a.txt /home/user/project/b.txt", "/home/user/project"),
+      "diff a.txt b.txt",
+    );
+  });
+
+  test("leaves non-project absolute paths unchanged", () => {
+    assert.strictEqual(
+      normalizeCommand("cat /etc/hosts", "/home/user/project"),
+      "cat /etc/hosts",
+    );
+  });
+
+  test("no-ops when projectRoot is not provided", () => {
+    assert.strictEqual(
+      normalizeCommand("bash /home/user/project/.pi/skills/foo.sh"),
+      "bash /home/user/project/.pi/skills/foo.sh",
+    );
+  });
+
+  // --- Shell keyword prefix stripping ---
+
+  test("strips if prefix", () => {
+    assert.strictEqual(
+      normalizeCommand('if [ -d "$dir" ]'),
+      '[ -d "$dir" ]',
+    );
+  });
+
+  test("strips do prefix", () => {
+    assert.strictEqual(
+      normalizeCommand('do grep -q foo bar'),
+      "grep -q foo bar",
+    );
+  });
+
+  test("strips then prefix", () => {
+    assert.strictEqual(
+      normalizeCommand("then echo hello"),
+      "echo hello",
+    );
+  });
+
+  test("strips while prefix", () => {
+    assert.strictEqual(
+      normalizeCommand("while read line"),
+      "read line",
+    );
+  });
+
+  test("strips elif prefix", () => {
+    assert.strictEqual(
+      normalizeCommand('elif [ -f "$file" ]'),
+      '[ -f "$file" ]',
+    );
+  });
+
+  test("does not strip keywords that are part of command names", () => {
+    assert.strictEqual(
+      normalizeCommand("ifeq something"),
+      "ifeq something",
+    );
+  });
+
+  // --- Combined normalizations ---
+
+  test("strips env vars + negation + xargs together", () => {
+    assert.strictEqual(
+      normalizeCommand("FOO=bar ! xargs -0 grep -l pattern"),
+      "grep -l pattern",
+    );
+  });
+
+  test("strips xargs + project root together", () => {
+    assert.strictEqual(
+      normalizeCommand("xargs -0 node /home/user/project/.pi/skills/run.js", "/home/user/project"),
+      "node .pi/skills/run.js",
+    );
+  });
 });

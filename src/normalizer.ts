@@ -1,10 +1,22 @@
 /**
  * Command normalization.
  *
- * Strips global flags that appear before the subcommand so that
- * "git -C /some/path fetch --all" normalizes to "git fetch --all"
- * and matches the rule Bash(git fetch *).
+ * Combines bash shell scaffolding removal (see bash-normalizer.ts) with
+ * tool-specific global flag stripping and project-root path resolution.
+ *
+ * Full pipeline (in order):
+ *  1. Bash scaffolding (env vars, !, keywords, xargs)  — bash-normalizer.ts
+ *  2. Absolute project-root paths → relative           — this file
+ *  3. Tool-specific global flags (git, kubectl, oc, docker) — this file
  */
+
+import {
+  stripEnvVarPrefixes,
+  stripBashScaffolding,
+} from "./bash-normalizer.js";
+
+// Re-export for existing consumers
+export { stripEnvVarPrefixes };
 
 interface NormalizeSpec {
   /** Flags that consume the next token as their argument. */
@@ -41,31 +53,18 @@ const normalizeSpecs: Record<string, NormalizeSpec> = {
   },
 };
 
-/**
- * Strip leading VAR=value prefixes from a command.
- * `KUBECONFIG=/dev/null GOFLAGS=-race make test` → `make test`
- *
- * Returns the original command if it's ALL assignments (no command follows).
- */
-export function stripEnvVarPrefixes(command: string): string {
-  const parts = command.trim().split(/\s+/);
-  let i = 0;
-  while (i < parts.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(parts[i])) {
-    i++;
-  }
-  if (i === 0 || i === parts.length) return command;
-  return parts.slice(i).join(" ");
-}
+export function normalizeCommand(command: string, projectRoot?: string): string {
+  let stripped = stripBashScaffolding(command);
 
-/**
- * Normalize a command by:
- * 1. Stripping leading VAR=value env var prefixes
- * 2. Stripping global flags before the subcommand (git, kubectl, oc, docker)
- *
- * Unknown commands pass through with only env var stripping.
- */
-export function normalizeCommand(command: string): string {
-  const stripped = stripEnvVarPrefixes(command.trim());
+  // Replace absolute project-root paths with relative equivalents
+  // so that "/home/user/project/.pi/skills/foo" matches ".pi/skills/**"
+  if (projectRoot) {
+    const prefix = projectRoot.endsWith("/") ? projectRoot : projectRoot + "/";
+    stripped = stripped.split(/\s+/).map((token) =>
+      token.startsWith(prefix) ? token.slice(prefix.length) : token
+    ).join(" ");
+  }
+
   const parts = stripped.split(/\s+/);
   if (parts.length === 0) return stripped;
 

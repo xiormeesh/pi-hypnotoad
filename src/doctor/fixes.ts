@@ -6,17 +6,21 @@ import type { Permissions } from "../types.js";
 import type { Finding } from "./types.js";
 import { parseRule } from "../matcher.js";
 
+const typeOrder: Record<string, number> = { Read: 0, Write: 1, Edit: 2, Bash: 3 };
+
+/** Comparator: group by type (Read → Write → Edit → Bash), then alphabetically. */
+export function ruleComparator(a: string, b: string): number {
+  const pa = parseRule(a);
+  const pb = parseRule(b);
+  const typeA = pa ? (typeOrder[pa.type] ?? 99) : 99;
+  const typeB = pb ? (typeOrder[pb.type] ?? 99) : 99;
+  if (typeA !== typeB) return typeA - typeB;
+  return a.localeCompare(b);
+}
+
 /** Sort rules: group by type (Read → Write → Edit → Bash), then alphabetically within each group. */
 export function sortRules(rules: string[]): string[] {
-  const typeOrder: Record<string, number> = { Read: 0, Write: 1, Edit: 2, Bash: 3 };
-  return [...rules].sort((a, b) => {
-    const pa = parseRule(a);
-    const pb = parseRule(b);
-    const typeA = pa ? (typeOrder[pa.type] ?? 99) : 99;
-    const typeB = pb ? (typeOrder[pb.type] ?? 99) : 99;
-    if (typeA !== typeB) return typeA - typeB;
-    return a.localeCompare(b);
-  });
+  return [...rules].sort(ruleComparator);
 }
 
 /** Apply approved fixes to permissions (mutates in place). Returns count of changes. */
