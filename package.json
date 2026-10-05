@@ -1,0 +1,23 @@
+{
+  "name": "pi-hypnotoad",
+  "version": "0.1.0",
+  "description": "ALL GLORY TO THE HYPNOTOAD — permission gate for pi tool calls with allow/deny/ask rules and glob patterns",
+  "keywords": ["pi-package", "pi-extension", "permission", "security", "guardrail", "hypnotoad"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xiormeesh/pi-hypnotoad"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "defaults.yml",
+    "README.md"
+  ]
+}

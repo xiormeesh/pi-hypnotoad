@@ -1,0 +1,121 @@
+# 🐸 Hypnotoad — default permissions
+#
+# Copied to ~/.pi/agent/permissions.yml on first run.
+# Customize for your project — delete groups you don't need,
+# add your own tools, scripts, and project paths.
+#
+# Evaluation order: deny (block) → ask (prompt) → allow (pass) → prompt
+# For bash commands, a specific allow rule overrides a broad ask rule.
+# Trailing ` *` is optional — Bash(date *) also matches bare `date`.
+# Use {a,b,c} brace expansion to group alternatives.
+# Modify(path:...) matches both Write and Edit operations.
+
+allow:
+  # All file reads (deny/ask rules below override for sensitive paths)
+  - "Read(path:**)"
+
+  # Uncomment and customize for your project paths:
+  # - "Modify(path:{src,wiki,docs}/**)"
+
+  # Shell builtins
+  - "Bash({command,echo,hash,test,type,which} *)"
+
+  # System info
+  - "Bash({cal,date,df,du,free,hostname,id,ps,uname,uptime,whoami} *)"
+
+  # File inspection
+  - "Bash({diff,file,ls,stat,tree} *)"
+
+  # Text viewing
+  - "Bash({cat,head,less,more,tail,wc} *)"
+
+  # Text processing and data formats
+  - "Bash({awk,column,comm,cut,jq,paste,printf,sort,tr,uniq,yq} *)"
+
+  # Search
+  - "Bash({grep,egrep,fgrep,rg} *)"
+
+  # Encoding and checksums
+  - "Bash({base64,md5sum,sha256sum,xxd} *)"
+
+  # Path utilities
+  - "Bash({basename,dirname,readlink,realpath} *)"
+
+  # Safe find (read-only queries only)
+  - "Bash(find . {-name,-type,-path} *)"
+
+  # Safe sed (read-only, no in-place edit)
+  - "Bash(sed {-n,-e,-E} *)"
+
+  # Git read-only
+  - "Bash(git {blame,branch,describe,diff,fetch,log,ls-files,ls-tree,remote,rev-parse,shortlog,show,tag} *)"
+  - "Bash(git config --get *)"
+  - "Bash(git stash list *)"
+  - "Bash(git status *)"
+
+  # Uncomment for your toolchain:
+  # - "Bash(go {build,fmt,run,test,vet} *)"
+  # - "Bash(npm {view,outdated,ls} *)"
+  # - "Bash(cargo {build,test,check,clippy} *)"
+  # - "Bash(make *)"
+
+deny:
+  # Sensitive file modifications — secrets and credentials
+  - "Modify(path:**/.ssh/**)"
+  - "Modify(path:**/*.{key,pem})"
+
+  # Destructive filesystem commands
+  - "Bash(rm {-r,-rf,--recursive} *)"
+  - "Bash(dd *)"
+  - "Bash(mkfs *)"
+  - "Bash({truncate,shred} *)"
+
+  # Privilege escalation
+  - "Bash(sudo *)"
+
+  # Dangerous permissions
+  - "Bash({chmod,chown} {777,000} *)"
+
+  # Env var leaking — all vectors
+  - "Bash({env,printenv,export -p})"
+  - "Bash({env,printenv,export -p} *)"
+  - "Bash({set,declare -p,typeset -p,compgen -v})"
+  - "Bash({set,declare -p,typeset -p,compgen -v} *)"
+
+  # Procfs env access
+  - "Read(path:/proc/*/environ)"
+
+ask:
+  # Git write operations
+  - "Bash(git {commit,push} *)"
+
+  # In-place file editing
+  - "Bash(sed -i *)"
+
+  # Network requests
+  - "Bash(curl *)"
+
+  # Single file deletion (recursive is denied above)
+  - "Bash(rm *)"
+
+  # Permissions changes (777/000 denied above, rest needs review)
+  - "Bash({chmod,chown} *)"
+
+  # Process management
+  - "Bash({kill,killall,pkill} *)"
+
+  # Uncomment for package managers:
+  # - "Bash(npm {install,i} *)"
+  # - "Bash(pip {install,add} *)"
+
+systemPrompt: |
+  ## Bash command restrictions
+  The following commands are HARD-BLOCKED and will fail if you try to run them.
+  Instead, tell the user what command to run manually:
+  - `rm -r`, `rm -rf`, `rm --recursive`
+  - `sudo`
+  - `chmod/chown 777` or `chmod/chown 000`
+  - `mkfs`, `dd`, `truncate`, `shred`
+  - `env`, `printenv`, `set`, `declare -p`, `export -p`
+
+  `git commit` and `git push` are allowed but will prompt for approval.
