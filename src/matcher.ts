@@ -90,6 +90,11 @@ export function matchesAnyRule(rules: string[], toolType: string, value: string,
   return rules.some((rule) => matchesRule(rule, toolType, value, projectRoot));
 }
 
+/** Find the first matching rule in the list, or null. */
+export function findMatchingRule(rules: string[], toolType: string, value: string, projectRoot?: string): string | null {
+  return rules.find((rule) => matchesRule(rule, toolType, value, projectRoot)) ?? null;
+}
+
 /**
  * For bash commands with chains, check that ALL segments match the rules.
  * Standalone `cd <literal>` segments in a chain are exempt (shell context setup).

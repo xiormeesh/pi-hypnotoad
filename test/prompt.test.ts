@@ -95,16 +95,17 @@ describe("formatBashPrompt", () => {
     assert.ok(output.includes("writes to file"));
   });
 
-  test("ask segment shows always-ask label", () => {
+  test("ask segment shows matched rule", () => {
     const output = formatBashPrompt("git push origin main", permissions);
-    assert.ok(output.includes("always-ask"));
+    assert.ok(output.includes("ask:"), "should show ask status");
+    assert.ok(output.includes("git push *"), "should show matching pattern");
   });
 
   test("truncates very long single segment", () => {
-    const longCmd = "echo " + "x".repeat(800);
+    const longCmd = "echo " + "x".repeat(2000);
     const output = formatBashPrompt(longCmd, permissions);
     assert.ok(output.includes("..."));
-    assert.ok(output.length < 800);
+    assert.ok(output.length < 2000);
   });
 
   test("truncates multi-segment when budget exhausted", () => {
@@ -116,7 +117,7 @@ describe("formatBashPrompt", () => {
   });
 
   test("single long command without spaces truncates correctly", () => {
-    const longCmd = "x".repeat(800);
+    const longCmd = "x".repeat(2000);
     const output = formatBashPrompt(longCmd, permissions);
     assert.ok(output.includes("..."));
   });

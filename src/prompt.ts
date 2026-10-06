@@ -6,18 +6,23 @@
  */
 
 import { splitBashSegments, fileRedirectTarget, isShellSetupSegment } from "./parser.js";
-import { matchesAnyRule } from "./matcher.js";
+import { matchesAnyRule, findMatchingRule } from "./matcher.js";
 import { normalizeCommand } from "./normalizer.js";
+import { stripBashScaffolding } from "./bash-normalizer.js";
 import type { Permissions } from "./types.js";
 
-const MAX_SEGMENT_DISPLAY = 200;
-const MAX_TOTAL_DISPLAY = 600;
+const MAX_SEGMENT_DISPLAY = 300;
+const MAX_TOTAL_DISPLAY = 1500;
 
 type SegmentStatus = "allow" | "deny" | "ask" | "unknown";
 
 interface AnnotatedSegment {
   text: string;
   status: SegmentStatus;
+  /** The rule pattern that matched (for ask/deny display). */
+  matchedRule?: string;
+  /** The scaffolding prefix stripped during normalization (shown dimmed). */
+  scaffolding?: string;
 }
 
 // ANSI color helpers
@@ -40,31 +45,35 @@ const statusIcons: Record<SegmentStatus, string> = {
   unknown: "?",
 };
 
-const statusLabels: Record<SegmentStatus, string> = {
-  allow: "",
-  deny: "(deny rule)",
-  ask: "(always-ask rule)",
-  unknown: "",
-};
+const DIM = "\x1b[2m";
 
 const REDIRECT_LABEL = "(writes to file)";
+
+/** Build a human-readable suffix showing which rule matched. */
+function ruleSuffix(seg: AnnotatedSegment): string {
+  if (!seg.matchedRule) return "";
+  // Extract the pattern from "Bash(make *)" → "make *"
+  const inner = seg.matchedRule.match(/^\w+\((.+)\)$/);
+  const pattern = inner ? inner[1] : seg.matchedRule;
+  return `  (${seg.status}: ${pattern})`;
+}
 
 /** Classify each segment of a bash command against the permission rules. */
 export function classifySegments(command: string, permissions: Permissions, projectRoot?: string): AnnotatedSegment[] {
   const segments = splitBashSegments(command);
   return segments.map((text) => {
     let status: SegmentStatus = "unknown";
+    let matchedRule: string | undefined;
     if (matchesAnyRule(permissions.deny, "Bash", text, projectRoot)) {
       status = "deny";
+      matchedRule = findMatchingRule(permissions.deny, "Bash", text, projectRoot) ?? undefined;
     } else if (
       matchesAnyRule(permissions.ask, "Bash", text, projectRoot) &&
       !matchesAnyRule(permissions.allow, "Bash", text, projectRoot)
     ) {
       status = "ask";
+      matchedRule = findMatchingRule(permissions.ask, "Bash", text, projectRoot) ?? undefined;
     } else if (matchesAnyRule(permissions.allow, "Bash", text, projectRoot)) {
-      // Allowed by pattern, but check for file redirects — a command that
-      // writes to a file shouldn't be silently approved just because the
-      // base command is allowed (e.g., echo * shouldn't auto-allow echo > file)
       const redirectTarget = fileRedirectTarget(text);
       status = redirectTarget ? "unknown" : "allow";
     } else if (
@@ -73,7 +82,16 @@ export function classifySegments(command: string, permissions: Permissions, proj
     ) {
       status = "allow";
     }
-    return { text, status };
+
+    // Detect scaffolding prefix (env vars, !, keywords) that was stripped
+    let scaffolding: string | undefined;
+    const normalized = stripBashScaffolding(text);
+    if (normalized !== text.trim() && normalized.length > 0) {
+      const idx = text.indexOf(normalized);
+      if (idx > 0) scaffolding = text.slice(0, idx);
+    }
+
+    return { text, status, matchedRule, scaffolding };
   });
 }
 
@@ -102,30 +120,54 @@ function formatSegment(text: string, maxLen: number): string {
 }
 
 /**
- * Turn a possibly multi-line display string into one or more plain-text lines,
- * each prefixed with the segment's icon.  This handles the case where
- * newline-separated commands end up in a single segment (the parser doesn't
- * split on \n yet) — every visual line gets an icon so nothing looks orphaned.
+ * Turn a possibly multi-line display string into one or more plain-text lines.
+ * The first line gets the segment icon; continuation lines (e.g. from a
+ * multi-line git commit message) are indented to align with the first line's
+ * text, without repeating the icon.
  * The suffix (label) is appended only to the last sub-line.
- *
- * ANSI styling is applied via statusIcons for visual distinction.
- * pi's TUI uses visibleWidth() to measure, so escape codes are safe.
  */
-function prefixedLines(
-  display: string,
-  icon: string,
-  suffix: string,
-  color: string = "",
-  indent: number = 0,
-): string[] {
+interface PrefixedLineOpts {
+  display: string;
+  icon: string;
+  suffix: string;
+  color?: string;
+  indent?: number;
+  /** Scaffolding prefix shown dimmed before the real command. */
+  scaffolding?: string;
+}
+
+function prefixedLines(opts: PrefixedLineOpts): string[] {
+  const { display, icon, suffix, color = "", indent = 0, scaffolding } = opts;
   const pad = "  ".repeat(indent);
-  const subLines = display.split("\n").map((l) => l.trim()).filter(Boolean);
-  return subLines.map((line, i) => {
-    const s = i === subLines.length - 1 ? suffix : "";
-    if (color) {
-      return `  ${color}${icon} ${pad}${line}${s}${RESET}`;
+  // Preserve original indentation — only trim the first line
+  const rawLines = display.split("\n");
+  const firstLine = rawLines[0]?.trim() ?? "";
+  // Continuation lines: keep original whitespace for code blocks
+  const contLines = rawLines.slice(1).filter((l) => l.trim().length > 0);
+  const allLines = [firstLine, ...contLines];
+  // "  ? " = 4 chars; continuation lines get the same left margin
+  const continuationPad = "    " + pad;
+
+  // If there's scaffolding, split the first line into dimmed prefix + colored command
+  let scaffoldingPrefix = "";
+  let commandText = firstLine;
+  if (scaffolding && firstLine.startsWith(scaffolding.trim())) {
+    scaffoldingPrefix = scaffolding.trim() + " ";
+    commandText = firstLine.slice(scaffoldingPrefix.length);
+  }
+
+  return allLines.map((line, i) => {
+    const s = i === allLines.length - 1 ? suffix : "";
+    if (i === 0) {
+      if (scaffoldingPrefix && color) {
+        return `  ${color}${icon} ${pad}${RESET}${DIM}${scaffoldingPrefix}${RESET}${color}${commandText}${s}${RESET}`;
+      }
+      if (color) return `  ${color}${icon} ${pad}${firstLine}${s}${RESET}`;
+      return `  ${icon} ${pad}${firstLine}${s}`;
     }
-    return `  ${icon} ${pad}${line}${s}`;
+    // Continuation: preserve original whitespace
+    if (color) return `  ${color}${continuationPad}${line}${s}${RESET}`;
+    return `  ${continuationPad}${line}${s}`;
   });
 }
 
@@ -162,14 +204,13 @@ export function formatBashPrompt(
   if (annotated.length === 1) {
     const seg = annotated[0];
     const icon = statusIcons[seg.status];
-    const label = statusLabels[seg.status];
     const color = statusColors[seg.status];
     const redirect = seg.status !== "allow" ? fileRedirectTarget(seg.text) : null;
     const display = formatSegment(seg.text, MAX_TOTAL_DISPLAY);
     const suffix = redirect
       ? `  ${REDIRECT_LABEL}`
-      : label ? `  ${label}` : "";
-    return prefixedLines(display, icon, suffix, color).join("\n");
+      : ruleSuffix(seg);
+    return prefixedLines({ display, icon, suffix, color, scaffolding: seg.scaffolding }).join("\n");
   }
 
   // Multiple segments — one per line with status and indentation
@@ -180,7 +221,6 @@ export function formatBashPrompt(
   for (let idx = 0; idx < annotated.length; idx++) {
     const seg = annotated[idx];
     const icon = statusIcons[seg.status];
-    const label = statusLabels[seg.status];
     const budget = Math.min(MAX_SEGMENT_DISPLAY, MAX_TOTAL_DISPLAY - totalLen);
 
     if (budget <= 20) {
@@ -192,9 +232,9 @@ export function formatBashPrompt(
     const redirect = seg.status !== "allow" ? fileRedirectTarget(seg.text) : null;
     const suffix = redirect
       ? `  ${REDIRECT_LABEL}`
-      : label ? `  ${label}` : "";
+      : ruleSuffix(seg);
     const color = statusColors[seg.status];
-    lines.push(...prefixedLines(display, icon, suffix, color, indents[idx]));
+    lines.push(...prefixedLines({ display, icon, suffix, color, indent: indents[idx], scaffolding: seg.scaffolding }));
     totalLen += display.length;
   }
 
