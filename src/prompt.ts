@@ -213,19 +213,37 @@ export function formatBashPrompt(
     return prefixedLines({ display, icon, suffix, color, scaffolding: seg.scaffolding }).join("\n");
   }
 
-  // Multiple segments — one per line with status and indentation
-  const lines: string[] = [];
-  let totalLen = 0;
+  // Multiple segments — one per line with status and indentation.
+  // Non-allow segments (the ones the user needs to review) get priority
+  // in the display budget so they're never truncated by long allow segments.
   const indents = computeIndents(annotated);
+
+  // Reserve budget for non-allow segments first
+  const nonAllowBudget = annotated
+    .filter((s) => s.status !== "allow")
+    .reduce((sum, s) => sum + Math.min(s.text.length, MAX_SEGMENT_DISPLAY), 0);
+  const allowBudget = Math.max(300, MAX_TOTAL_DISPLAY - nonAllowBudget);
+
+  const lines: string[] = [];
+  let allowLen = 0;
+  let nonAllowLen = 0;
 
   for (let idx = 0; idx < annotated.length; idx++) {
     const seg = annotated[idx];
     const icon = statusIcons[seg.status];
-    const budget = Math.min(MAX_SEGMENT_DISPLAY, MAX_TOTAL_DISPLAY - totalLen);
+    const isAllow = seg.status === "allow";
+
+    // Allow segments share a capped budget; non-allow segments get full space
+    let budget: number;
+    if (isAllow) {
+      budget = Math.min(MAX_SEGMENT_DISPLAY, allowBudget - allowLen);
+    } else {
+      budget = Math.min(MAX_SEGMENT_DISPLAY, MAX_TOTAL_DISPLAY - nonAllowLen);
+    }
 
     if (budget <= 20) {
-      lines.push("  ...");
-      break;
+      if (!isAllow) lines.push("  ...");
+      continue;
     }
 
     const display = formatSegment(seg.text, budget);
@@ -235,7 +253,9 @@ export function formatBashPrompt(
       : ruleSuffix(seg);
     const color = statusColors[seg.status];
     lines.push(...prefixedLines({ display, icon, suffix, color, indent: indents[idx], scaffolding: seg.scaffolding }));
-    totalLen += display.length;
+
+    if (isAllow) allowLen += display.length;
+    else nonAllowLen += display.length;
   }
 
   return lines.join("\n");
